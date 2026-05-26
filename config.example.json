@@ -1,7 +1,7 @@
 {
   "url": "https://chatgpt.com/codex/settings/usage",
-  "check_interval_seconds": 3600,
-  "phone_notification_interval_seconds": 7200,
+  "schedule_poll_interval_seconds": 60,
+  "post_reset_interval_seconds": 9000,
   "low_quota_threshold_percent": 25,
   "notify_mac": true,
   "notify_imessage": false,

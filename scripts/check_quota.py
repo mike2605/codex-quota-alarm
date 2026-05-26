@@ -14,14 +14,21 @@ HOME = Path.home()
 APP_DIR = Path(os.environ.get("CODEX_QUOTA_APP_DIR", HOME / ".codex" / "codex-quota-alert")).expanduser()
 CONFIG_PATH = APP_DIR / "config.json"
 STATE_PATH = APP_DIR / "state.json"
+SCHEDULE_PATH = APP_DIR / "reminder_schedule.json"
 LOG_DIR = APP_DIR / "logs"
 LAUNCHD_LABEL = "com.codex-quota-alarm.monitor"
 PLIST_PATH = HOME / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
 DEFAULT_URL = "https://chatgpt.com/codex/settings/usage"
+DEFAULT_SCHEDULE_POLL_INTERVAL_SECONDS = 60
+DEFAULT_POST_RESET_INTERVAL_SECONDS = 9000
+
+
+def now_dt():
+    return dt.datetime.now().astimezone()
 
 
 def now_iso():
-    return dt.datetime.now().astimezone().isoformat(timespec="seconds")
+    return now_dt().isoformat(timespec="seconds")
 
 
 def ensure_dirs():
@@ -32,8 +39,8 @@ def ensure_dirs():
 def default_config():
     return {
         "url": DEFAULT_URL,
-        "check_interval_seconds": 3600,
-        "phone_notification_interval_seconds": 7200,
+        "schedule_poll_interval_seconds": DEFAULT_SCHEDULE_POLL_INTERVAL_SECONDS,
+        "post_reset_interval_seconds": DEFAULT_POST_RESET_INTERVAL_SECONDS,
         "low_quota_threshold_percent": 25,
         "notify_mac": True,
         "notify_imessage": True,
@@ -60,12 +67,16 @@ def load_config():
     saved_config = load_json(CONFIG_PATH, {})
     config.update(saved_config)
     migrated = False
-    if saved_config.get("check_interval_seconds") == 1800:
-        config["check_interval_seconds"] = 3600
+    if "schedule_poll_interval_seconds" not in saved_config:
+        config["schedule_poll_interval_seconds"] = DEFAULT_SCHEDULE_POLL_INTERVAL_SECONDS
         migrated = True
-    if "phone_notification_interval_seconds" not in saved_config:
-        config["phone_notification_interval_seconds"] = 7200
+    if "post_reset_interval_seconds" not in saved_config:
+        config["post_reset_interval_seconds"] = DEFAULT_POST_RESET_INTERVAL_SECONDS
         migrated = True
+    for deprecated_key in ("check_interval_seconds", "phone_notification_interval_seconds"):
+        if deprecated_key in config:
+            config.pop(deprecated_key, None)
+            migrated = True
     if migrated and CONFIG_PATH.exists():
         save_json(CONFIG_PATH, config)
     return config
@@ -307,6 +318,78 @@ def format_status(status):
     return "\n".join(lines)
 
 
+def parse_iso_datetime(value):
+    if not value:
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        return parsed.astimezone()
+    return parsed
+
+
+def format_reminder_time(value):
+    if isinstance(value, str):
+        value = parse_iso_datetime(value)
+    if not value:
+        return "页面没有显示"
+    local = value.astimezone()
+    return f"{local.month}月{local.day}日 {local.hour:02d}:{local.minute:02d}"
+
+
+def format_status_with_next_reminder(status, next_reminder_at):
+    return f"{format_status(status)}\n下次提醒时间：{format_reminder_time(next_reminder_at)}。"
+
+
+def get_first_next_reminder_at(status):
+    return parse_reset_datetime(status.get("five_hour_reset_text"), status.get("checked_at"))
+
+
+def imessage_was_sent(results):
+    return bool((results.get("imessage") or {}).get("ok"))
+
+
+def load_schedule():
+    return load_json(SCHEDULE_PATH, {})
+
+
+def save_schedule(schedule):
+    save_json(SCHEDULE_PATH, schedule)
+
+
+def schedule_due(schedule, now=None):
+    next_reminder_at = parse_iso_datetime(schedule.get("next_reminder_at"))
+    if not next_reminder_at:
+        return False, None
+    now = now or now_dt()
+    return now >= next_reminder_at, next_reminder_at
+
+
+def next_interval_time(planned_at, now, interval_seconds):
+    next_at = planned_at + dt.timedelta(seconds=interval_seconds)
+    while next_at <= now:
+        next_at += dt.timedelta(seconds=interval_seconds)
+    return next_at
+
+
+def save_successful_phone_reminder(status, message, results, next_reminder_at, sent_count, planned_at=None):
+    save_json(STATE_PATH, status)
+    save_json(APP_DIR / "last_phone_status_notification.json", {
+        "sent_at": now_iso(),
+        "message": message,
+        "results": {"imessage": results.get("imessage")},
+    })
+    save_schedule({
+        "next_reminder_at": next_reminder_at.isoformat(timespec="seconds"),
+        "sent_count": sent_count,
+        "last_sent_at": now_iso(),
+        "last_planned_reminder_at": planned_at.isoformat(timespec="seconds") if planned_at else None,
+        "updated_at": now_iso(),
+    })
+
+
 def notify_mac(title, message):
     script = f'display notification {applescript_string(message)} with title {applescript_string(title)}'
     return run_osascript(script, timeout=10)
@@ -345,19 +428,6 @@ def send_phone_notification(config, title, message):
         ok, error = notify_imessage(config.get("imessage_recipient", ""), f"{title}。{message}")
         results["imessage"] = {"ok": ok, "error": error}
     return results
-
-
-def should_send_phone_status(config):
-    last_notification = load_json(APP_DIR / "last_phone_status_notification.json", {})
-    last_sent = last_notification.get("sent_at")
-    if not last_sent:
-        return True
-    try:
-        sent_at = dt.datetime.fromisoformat(last_sent)
-    except ValueError:
-        return True
-    interval_seconds = int(config.get("phone_notification_interval_seconds", 7200))
-    return dt.datetime.now().astimezone() - sent_at >= dt.timedelta(seconds=interval_seconds)
 
 
 def should_send_error_notification():
@@ -468,7 +538,17 @@ def command_check(args):
 
 def command_monitor(args):
     config = load_config()
-    previous = load_json(STATE_PATH, {})
+    schedule = load_schedule()
+    due, planned_at = schedule_due(schedule)
+    if not due:
+        print(json.dumps({
+            "due": False,
+            "reason": "not_due" if planned_at else "schedule_missing",
+            "next_reminder_at": planned_at.isoformat(timespec="seconds") if planned_at else None,
+            "schedule": schedule,
+        }, ensure_ascii=False, indent=2))
+        return 0
+
     try:
         current = read_status(args, config)
     except Exception as exc:
@@ -481,95 +561,80 @@ def command_monitor(args):
         save_error(exc, notified)
         return 3
 
-    alert, reason = should_alert_reset(previous, current)
-    current["last_monitor_reason"] = reason
-    save_json(STATE_PATH, current)
-
-    if not current.get("ok") or reset_signal(current) is None:
+    if not current.get("ok"):
         notified = False
         if should_send_error_notification():
-            send_notifications(config, "Codex 额度检查失败", "读到了页面，但没有识别出剩余额度或重置信息。", include_phone=False)
+            send_notifications(config, "Codex 额度检查失败", "读到了页面，但没有识别出剩余额度。", include_phone=False)
             notified = True
-        save_error("quota or reset text was not recognized", notified)
+        save_error("quota was not recognized", notified)
         return 2
 
-    if alert:
-        message = format_status(current)
-        results = send_notifications(config, "Codex 额度已重置", message, include_phone=True)
-        save_json(APP_DIR / "last_notification.json", {"sent_at": now_iso(), "message": message, "results": results})
-        imessage_result = (results.get("imessage") or {})
-        if imessage_result.get("ok"):
-            save_json(
-                APP_DIR / "last_phone_status_notification.json",
-                {"sent_at": now_iso(), "message": message, "results": {"imessage": imessage_result}},
-            )
+    sent_count = int(schedule.get("sent_count", 0)) + 1
+    interval_seconds = int(config.get("post_reset_interval_seconds", DEFAULT_POST_RESET_INTERVAL_SECONDS))
+    next_reminder_at = next_interval_time(planned_at, now_dt(), interval_seconds)
+    message = format_status_with_next_reminder(current, next_reminder_at)
+    results = send_phone_notification(config, "Codex 当前额度", message)
+    if not imessage_was_sent(results):
+        print(json.dumps({
+            "sent": False,
+            "reason": "imessage_failed",
+            "results": results,
+            "status": current,
+            "schedule": schedule,
+        }, ensure_ascii=False, indent=2))
+        return 4
 
-    phone_status_sent = False
-    phone_status_results = None
-    if should_send_phone_status(config):
-        message = format_status(current)
-        phone_status_results = send_phone_notification(config, "Codex 当前额度", message)
-        imessage_result = phone_status_results.get("imessage") or {}
-        if imessage_result.get("ok"):
-            save_json(
-                APP_DIR / "last_phone_status_notification.json",
-                {"sent_at": now_iso(), "message": message, "results": phone_status_results},
-            )
-            phone_status_sent = True
-
+    save_successful_phone_reminder(current, message, results, next_reminder_at, sent_count, planned_at=planned_at)
     print(json.dumps({
-        "alert": alert,
-        "reason": reason,
-        "phone_status_sent": phone_status_sent,
-        "phone_status_results": phone_status_results,
+        "sent": True,
+        "planned_reminder_at": planned_at.isoformat(timespec="seconds"),
+        "next_reminder_at": next_reminder_at.isoformat(timespec="seconds"),
+        "sent_count": sent_count,
+        "results": results,
         "status": current,
     }, ensure_ascii=False, indent=2))
     return 0
 
 
-def command_notify_test(args):
+def send_current_and_seed_schedule(args, include_phone=True):
     config = load_config()
-    if args.recipient:
+    if getattr(args, "recipient", None):
         config["imessage_recipient"] = args.recipient
     status = read_status(args, config)
     if not status.get("ok"):
         print(json.dumps(status, ensure_ascii=False, indent=2))
         return 2
-    message = format_status(status)
-    results = send_notifications(config, "Codex 当前额度", message, include_phone=not args.mac_only)
-    save_json(STATE_PATH, status)
-    imessage = results.get("imessage")
-    if imessage and imessage.get("ok"):
-        save_json(
-            APP_DIR / "last_phone_status_notification.json",
-            {"sent_at": now_iso(), "message": message, "results": {"imessage": imessage}},
-        )
-    print(json.dumps({"message": message, "results": results, "status": status}, ensure_ascii=False, indent=2))
-    imessage = results.get("imessage")
-    if imessage and not imessage.get("ok"):
+    next_reminder_at = get_first_next_reminder_at(status)
+    if not next_reminder_at:
+        print(json.dumps({
+            "error": "没有读到 5 小时额度重置时间，无法设置下一次提醒。",
+            "status": status,
+        }, ensure_ascii=False, indent=2))
+        return 2
+    message = format_status_with_next_reminder(status, next_reminder_at)
+    results = send_notifications(config, "Codex 当前额度", message, include_phone=include_phone)
+    if include_phone and not imessage_was_sent(results):
+        save_json(STATE_PATH, status)
+        print(json.dumps({"message": message, "results": results, "status": status}, ensure_ascii=False, indent=2))
         return 4
+    save_json(STATE_PATH, status)
+    if include_phone:
+        save_successful_phone_reminder(status, message, results, next_reminder_at, 1)
+    print(json.dumps({
+        "message": message,
+        "next_reminder_at": next_reminder_at.isoformat(timespec="seconds"),
+        "results": results,
+        "status": status,
+    }, ensure_ascii=False, indent=2))
     return 0 if not results.get("mac") or results["mac"].get("ok") else 3
+
+
+def command_notify_test(args):
+    return send_current_and_seed_schedule(args, include_phone=not args.mac_only)
 
 
 def command_notify_current(args):
-    config = load_config()
-    status = read_status(args, config)
-    if not status.get("ok"):
-        print(json.dumps(status, ensure_ascii=False, indent=2))
-        return 2
-    message = format_status(status)
-    results = send_notifications(config, "Codex 当前额度", message, include_phone=True)
-    save_json(STATE_PATH, status)
-    imessage = results.get("imessage")
-    if imessage and imessage.get("ok"):
-        save_json(
-            APP_DIR / "last_phone_status_notification.json",
-            {"sent_at": now_iso(), "message": message, "results": {"imessage": imessage}},
-        )
-    print(json.dumps({"message": message, "results": results, "status": status}, ensure_ascii=False, indent=2))
-    if imessage and not imessage.get("ok"):
-        return 4
-    return 0 if not results.get("mac") or results["mac"].get("ok") else 3
+    return send_current_and_seed_schedule(args, include_phone=True)
 
 
 def command_set_imessage(args):
@@ -590,7 +655,7 @@ def command_install(args):
     plist = {
         "Label": LAUNCHD_LABEL,
         "ProgramArguments": [sys.executable, str(script_path), "--timeout", "25", "monitor"],
-        "StartInterval": int(config.get("check_interval_seconds", 3600)),
+        "StartInterval": int(config.get("schedule_poll_interval_seconds", DEFAULT_SCHEDULE_POLL_INTERVAL_SECONDS)),
         "RunAtLoad": True,
         "StandardOutPath": str(LOG_DIR / "launchd.out.log"),
         "StandardErrorPath": str(LOG_DIR / "launchd.err.log"),
@@ -610,7 +675,7 @@ def command_install(args):
         return boot.returncode
     subprocess.run(["launchctl", "kickstart", "-k", f"gui/{uid}/{LAUNCHD_LABEL}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print(f"Installed launchd job: {PLIST_PATH}")
-    print("Checks every 1 hour.")
+    print("Wakes every 1 minute; checks quota only at the scheduled reminder time.")
     return 0
 
 
@@ -626,7 +691,14 @@ def command_uninstall(args):
 def command_status(args):
     state = load_json(STATE_PATH, {})
     config = load_config()
-    print(json.dumps({"config": config, "state": state, "plist": str(PLIST_PATH), "plist_exists": PLIST_PATH.exists()}, ensure_ascii=False, indent=2))
+    schedule = load_schedule()
+    print(json.dumps({
+        "config": config,
+        "state": state,
+        "schedule": schedule,
+        "plist": str(PLIST_PATH),
+        "plist_exists": PLIST_PATH.exists(),
+    }, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -640,7 +712,7 @@ def build_parser():
     check.add_argument("--save-state", action="store_true", help="Save this status as the monitor baseline.")
     check.set_defaults(func=command_check)
 
-    monitor = subparsers.add_parser("monitor", help="Run one scheduled check and send periodic phone status.")
+    monitor = subparsers.add_parser("monitor", help="Wake scheduler and send quota only when the reminder is due.")
     monitor.set_defaults(func=command_monitor)
 
     notify_test = subparsers.add_parser("notify-test", help="Send a test notification.")
@@ -655,7 +727,7 @@ def build_parser():
     set_imessage.add_argument("recipient")
     set_imessage.set_defaults(func=command_set_imessage)
 
-    install = subparsers.add_parser("install", help="Install 1-hour local launchd reminder.")
+    install = subparsers.add_parser("install", help="Install local reminder scheduler.")
     install.set_defaults(func=command_install)
 
     uninstall = subparsers.add_parser("uninstall", help="Remove the local launchd reminder.")
