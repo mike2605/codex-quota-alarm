@@ -531,9 +531,20 @@ def command_notify_test(args):
     config = load_config()
     if args.recipient:
         config["imessage_recipient"] = args.recipient
-    message = "本周剩余：80%。下次重置：测试时间。"
-    results = send_notifications(config, "Codex 额度提醒测试", message, include_phone=not args.mac_only)
-    print(json.dumps(results, ensure_ascii=False, indent=2))
+    status = read_status(args, config)
+    if not status.get("ok"):
+        print(json.dumps(status, ensure_ascii=False, indent=2))
+        return 2
+    message = format_status(status)
+    results = send_notifications(config, "Codex 当前额度", message, include_phone=not args.mac_only)
+    save_json(STATE_PATH, status)
+    imessage = results.get("imessage")
+    if imessage and imessage.get("ok"):
+        save_json(
+            APP_DIR / "last_phone_status_notification.json",
+            {"sent_at": now_iso(), "message": message, "results": {"imessage": imessage}},
+        )
+    print(json.dumps({"message": message, "results": results, "status": status}, ensure_ascii=False, indent=2))
     imessage = results.get("imessage")
     if imessage and not imessage.get("ok"):
         return 4
