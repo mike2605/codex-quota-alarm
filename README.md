@@ -49,7 +49,7 @@ View > Developer > Allow JavaScript from Apple Events
 ./configure.sh "+8613800000000"
 ```
 
-这会保存收件人，并发送一条测试消息。
+这会保存收件人，立刻读取一次真实额度，并把当前额度发送到手机。
 
 ## 自动提醒规则
 

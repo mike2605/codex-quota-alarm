@@ -549,8 +549,13 @@ def command_notify_current(args):
     message = format_status(status)
     results = send_notifications(config, "Codex 当前额度", message, include_phone=True)
     save_json(STATE_PATH, status)
-    print(json.dumps({"message": message, "results": results, "status": status}, ensure_ascii=False, indent=2))
     imessage = results.get("imessage")
+    if imessage and imessage.get("ok"):
+        save_json(
+            APP_DIR / "last_phone_status_notification.json",
+            {"sent_at": now_iso(), "message": message, "results": {"imessage": imessage}},
+        )
+    print(json.dumps({"message": message, "results": results, "status": status}, ensure_ascii=False, indent=2))
     if imessage and not imessage.get("ok"):
         return 4
     return 0 if not results.get("mac") or results["mac"].get("ok") else 3

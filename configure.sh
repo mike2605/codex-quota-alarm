@@ -15,4 +15,4 @@ if [ "${1:-}" = "" ]; then
 fi
 
 python3 "$SCRIPT" set-imessage "$1"
-python3 "$SCRIPT" notify-test
+python3 "$SCRIPT" notify-current
