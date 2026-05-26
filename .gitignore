@@ -1,0 +1,11 @@
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.zip
+config.json
+state.json
+last_error.json
+last_notification.json
+logs/

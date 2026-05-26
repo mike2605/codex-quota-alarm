@@ -1,0 +1,8 @@
+{
+  "url": "https://chatgpt.com/codex/settings/usage",
+  "check_interval_seconds": 1800,
+  "low_quota_threshold_percent": 25,
+  "notify_mac": true,
+  "notify_imessage": false,
+  "imessage_recipient": ""
+}
