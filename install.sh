@@ -19,5 +19,5 @@ Next:
 1. Open Chrome and log in to ChatGPT/Codex.
 2. In Chrome, enable: View > Developer > Allow JavaScript from Apple Events.
 3. Optional: run ./configure.sh "+8613800000000" to enable iMessage.
-4. Test with: codex-quota-alarm/check
+4. Test with: ./check
 EOF

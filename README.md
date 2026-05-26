@@ -20,7 +20,7 @@
 ## 安装
 
 ```bash
-git clone https://github.com/YOUR_NAME/codex-quota-alarm.git
+git clone https://github.com/michael772196592-alt/codex-quota-alarm.git
 cd codex-quota-alarm
 ./install.sh
 ```
