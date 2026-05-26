@@ -32,7 +32,8 @@ def ensure_dirs():
 def default_config():
     return {
         "url": DEFAULT_URL,
-        "check_interval_seconds": 1800,
+        "check_interval_seconds": 3600,
+        "phone_notification_interval_seconds": 7200,
         "low_quota_threshold_percent": 25,
         "notify_mac": True,
         "notify_imessage": True,
@@ -56,7 +57,17 @@ def save_json(path, value):
 
 def load_config():
     config = default_config()
-    config.update(load_json(CONFIG_PATH, {}))
+    saved_config = load_json(CONFIG_PATH, {})
+    config.update(saved_config)
+    migrated = False
+    if saved_config.get("check_interval_seconds") == 1800:
+        config["check_interval_seconds"] = 3600
+        migrated = True
+    if "phone_notification_interval_seconds" not in saved_config:
+        config["phone_notification_interval_seconds"] = 7200
+        migrated = True
+    if migrated and CONFIG_PATH.exists():
+        save_json(CONFIG_PATH, config)
     return config
 
 
@@ -328,6 +339,27 @@ def send_notifications(config, title, message, include_phone=True):
     return results
 
 
+def send_phone_notification(config, title, message):
+    results = {"imessage": None}
+    if config.get("notify_imessage", True):
+        ok, error = notify_imessage(config.get("imessage_recipient", ""), f"{title}。{message}")
+        results["imessage"] = {"ok": ok, "error": error}
+    return results
+
+
+def should_send_phone_status(config):
+    last_notification = load_json(APP_DIR / "last_phone_status_notification.json", {})
+    last_sent = last_notification.get("sent_at")
+    if not last_sent:
+        return True
+    try:
+        sent_at = dt.datetime.fromisoformat(last_sent)
+    except ValueError:
+        return True
+    interval_seconds = int(config.get("phone_notification_interval_seconds", 7200))
+    return dt.datetime.now().astimezone() - sent_at >= dt.timedelta(seconds=interval_seconds)
+
+
 def should_send_error_notification():
     last_error = load_json(APP_DIR / "last_error.json", {})
     last_sent = last_error.get("notified_at")
@@ -465,8 +497,33 @@ def command_monitor(args):
         message = format_status(current)
         results = send_notifications(config, "Codex 额度已重置", message, include_phone=True)
         save_json(APP_DIR / "last_notification.json", {"sent_at": now_iso(), "message": message, "results": results})
+        imessage_result = (results.get("imessage") or {})
+        if imessage_result.get("ok"):
+            save_json(
+                APP_DIR / "last_phone_status_notification.json",
+                {"sent_at": now_iso(), "message": message, "results": {"imessage": imessage_result}},
+            )
 
-    print(json.dumps({"alert": alert, "reason": reason, "status": current}, ensure_ascii=False, indent=2))
+    phone_status_sent = False
+    phone_status_results = None
+    if should_send_phone_status(config):
+        message = format_status(current)
+        phone_status_results = send_phone_notification(config, "Codex 当前额度", message)
+        imessage_result = phone_status_results.get("imessage") or {}
+        if imessage_result.get("ok"):
+            save_json(
+                APP_DIR / "last_phone_status_notification.json",
+                {"sent_at": now_iso(), "message": message, "results": phone_status_results},
+            )
+            phone_status_sent = True
+
+    print(json.dumps({
+        "alert": alert,
+        "reason": reason,
+        "phone_status_sent": phone_status_sent,
+        "phone_status_results": phone_status_results,
+        "status": current,
+    }, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -517,7 +574,7 @@ def command_install(args):
     plist = {
         "Label": LAUNCHD_LABEL,
         "ProgramArguments": [sys.executable, str(script_path), "--timeout", "25", "monitor"],
-        "StartInterval": int(config.get("check_interval_seconds", 1800)),
+        "StartInterval": int(config.get("check_interval_seconds", 3600)),
         "RunAtLoad": True,
         "StandardOutPath": str(LOG_DIR / "launchd.out.log"),
         "StandardErrorPath": str(LOG_DIR / "launchd.err.log"),
@@ -537,7 +594,7 @@ def command_install(args):
         return boot.returncode
     subprocess.run(["launchctl", "kickstart", "-k", f"gui/{uid}/{LAUNCHD_LABEL}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print(f"Installed launchd job: {PLIST_PATH}")
-    print("Checks every 30 minutes.")
+    print("Checks every 1 hour.")
     return 0
 
 
@@ -567,7 +624,7 @@ def build_parser():
     check.add_argument("--save-state", action="store_true", help="Save this status as the monitor baseline.")
     check.set_defaults(func=command_check)
 
-    monitor = subparsers.add_parser("monitor", help="Run one scheduled check and notify on reset.")
+    monitor = subparsers.add_parser("monitor", help="Run one scheduled check and send periodic phone status.")
     monitor.set_defaults(func=command_monitor)
 
     notify_test = subparsers.add_parser("notify-test", help="Send a test notification.")
@@ -582,7 +639,7 @@ def build_parser():
     set_imessage.add_argument("recipient")
     set_imessage.set_defaults(func=command_set_imessage)
 
-    install = subparsers.add_parser("install", help="Install 30-minute local launchd reminder.")
+    install = subparsers.add_parser("install", help="Install 1-hour local launchd reminder.")
     install.set_defaults(func=command_install)
 
     uninstall = subparsers.add_parser("uninstall", help="Remove the local launchd reminder.")
