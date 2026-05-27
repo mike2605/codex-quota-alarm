@@ -98,8 +98,20 @@ def run_osascript(script, timeout=30):
     )
 
 
+def chrome_is_running():
+    result = subprocess.run(
+        ["pgrep", "-x", "Google Chrome"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.returncode == 0
+
+
 def read_chrome_text(url, timeout=45):
+    should_quit_chrome = "false" if chrome_is_running() else "true"
     script = f"""
+set shouldQuitChrome to {should_quit_chrome}
 tell application "Google Chrome"
     set quotaWindow to make new window
     set bounds of quotaWindow to {{80, 80, 980, 760}}
@@ -129,11 +141,13 @@ tell application "Google Chrome"
         end repeat
         set finalText to execute quotaTab javascript "document.body ? document.body.innerText : ''"
         close quotaWindow
+        if shouldQuitChrome then quit
         return finalText
     on error errMsg number errNum
         try
             close quotaWindow
         end try
+        if shouldQuitChrome then quit
         error errMsg number errNum
     end try
 end tell
