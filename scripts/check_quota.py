@@ -113,11 +113,14 @@ def read_chrome_text(url, timeout=45):
     script = f"""
 set shouldQuitChrome to {should_quit_chrome}
 tell application "Google Chrome"
-    set quotaWindow to make new window
-    set bounds of quotaWindow to {{80, 80, 980, 760}}
-    set quotaTab to active tab of quotaWindow
+    if (count of windows) is 0 then
+        set quotaWindow to make new window
+        set bounds of quotaWindow to {{80, 80, 980, 760}}
+    else
+        set quotaWindow to front window
+    end if
+    set quotaTab to make new tab at end of tabs of quotaWindow with properties {{URL:{applescript_string(url)}}}
     try
-        set URL of quotaTab to {applescript_string(url)}
         set startedAt to current date
         repeat
             delay 1
@@ -140,12 +143,12 @@ tell application "Google Chrome"
             if ((current date) - dataStartedAt) > {timeout} then exit repeat
         end repeat
         set finalText to execute quotaTab javascript "document.body ? document.body.innerText : ''"
-        close quotaWindow
+        close quotaTab
         if shouldQuitChrome then quit
         return finalText
     on error errMsg number errNum
         try
-            close quotaWindow
+            close quotaTab
         end try
         if shouldQuitChrome then quit
         error errMsg number errNum

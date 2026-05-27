@@ -92,9 +92,9 @@ View > Developer > Allow JavaScript from Apple Events
 
 先运行 `./configure.sh "+手机号"`。第一条会立刻发送，后续会按短信里的“下次提醒时间”发送。
 
-### 为什么 Chrome 会打开一个窗口？
+### 为什么 Chrome 会打开一个标签页？
 
-检查时会临时打开一个独立 Chrome 窗口读取额度，读完自动关闭，不会占用你正在浏览的标签页。如果 Chrome 是这个工具临时启动的，读完后也会退出 Chrome，不让它留在后台。
+检查时会在已有 Chrome 窗口里临时打开一个新标签页读取额度，读完自动关闭这个标签页。如果 Chrome 是这个工具临时启动的，读完后也会退出 Chrome，不让它留在后台。
 
 ### iMessage 显示发送成功，但手机没收到？
 
