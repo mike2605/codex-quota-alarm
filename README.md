@@ -94,7 +94,7 @@ View > Developer > Allow JavaScript from Apple Events
 
 ### 为什么 Chrome 会打开一个标签页？
 
-检查时会在已有 Chrome 窗口里临时打开一个新标签页读取额度，读完自动关闭这个标签页。如果 Chrome 是这个工具临时启动的，读完后也会退出 Chrome，不让它留在后台。
+检查时会在已有 Chrome 窗口里临时打开一个新标签页读取额度，读完自动关闭这个标签页。它不会主动打开新的 Chrome 窗口；如果 Chrome 没有打开的窗口，会提示你先打开已经登录的 Chrome 窗口。
 
 ### iMessage 显示发送成功，但手机没收到？
 

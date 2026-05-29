@@ -114,11 +114,9 @@ def read_chrome_text(url, timeout=45):
 set shouldQuitChrome to {should_quit_chrome}
 tell application "Google Chrome"
     if (count of windows) is 0 then
-        set quotaWindow to make new window
-        set bounds of quotaWindow to {{80, 80, 980, 760}}
-    else
-        set quotaWindow to front window
+        error "Chrome 没有打开的窗口。请先打开你已经登录 ChatGPT/Codex 的 Chrome 窗口，再重新运行。"
     end if
+    set quotaWindow to front window
     set quotaTab to make new tab at end of tabs of quotaWindow with properties {{URL:{applescript_string(url)}}}
     try
         set startedAt to current date
