@@ -108,14 +108,26 @@ def chrome_is_running():
     return result.returncode == 0
 
 
+def chrome_window_count():
+    if not chrome_is_running():
+        return 0
+    result = run_osascript('tell application "Google Chrome" to return count of windows', timeout=5)
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise RuntimeError(detail or "Chrome window check failed")
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return 0
+
+
 def read_chrome_text(url, timeout=45):
-    should_quit_chrome = "false" if chrome_is_running() else "true"
+    if not chrome_is_running():
+        raise RuntimeError("Chrome 没有运行。请先打开你已经登录 ChatGPT/Codex 的 Chrome 窗口，再重新运行。")
+    if chrome_window_count() < 1:
+        raise RuntimeError("Chrome 没有打开的窗口。请先打开你已经登录 ChatGPT/Codex 的 Chrome 窗口，再重新运行。")
     script = f"""
-set shouldQuitChrome to {should_quit_chrome}
 tell application "Google Chrome"
-    if (count of windows) is 0 then
-        error "Chrome 没有打开的窗口。请先打开你已经登录 ChatGPT/Codex 的 Chrome 窗口，再重新运行。"
-    end if
     set quotaWindow to front window
     set quotaTab to make new tab at end of tabs of quotaWindow with properties {{URL:{applescript_string(url)}}}
     try
@@ -142,13 +154,11 @@ tell application "Google Chrome"
         end repeat
         set finalText to execute quotaTab javascript "document.body ? document.body.innerText : ''"
         close quotaTab
-        if shouldQuitChrome then quit
         return finalText
     on error errMsg number errNum
         try
             close quotaTab
         end try
-        if shouldQuitChrome then quit
         error errMsg number errNum
     end try
 end tell
